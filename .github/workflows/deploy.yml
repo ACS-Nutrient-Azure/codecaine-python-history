@@ -1,0 +1,59 @@
+name: Deploy to ECS
+
+on:
+  push:
+    branches: [deploy]
+    paths: ['app/**', '.github/workflows/deploy.yml']
+  workflow_dispatch:
+
+env:
+  AWS_REGION: ap-northeast-2
+  ECR_REGISTRY: 070238434919.dkr.ecr.ap-northeast-2.amazonaws.com
+  ECR_REPOSITORY: cdci-prd-history
+  SERVICE_NAME: history
+  CLUSTER: cdci-prd-cluster
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build and push image
+        id: build
+        run: |
+          TAG=$(date -u +%s)
+          IMAGE=${{ env.ECR_REGISTRY }}/${{ env.ECR_REPOSITORY }}:$TAG
+          docker build -t $IMAGE .
+          docker push $IMAGE
+          echo "image=$IMAGE" >> $GITHUB_OUTPUT
+
+      - name: Get latest task definition
+        run: |
+          aws ecs describe-task-definition \
+            --task-definition cdci-prd-${{ env.SERVICE_NAME }} \
+            --query taskDefinition > task-definition.json
+
+      - name: Update task definition with new image
+        id: task-def
+        uses: aws-actions/amazon-ecs-render-task-definition@v1
+        with:
+          task-definition: task-definition.json
+          container-name: ${{ env.SERVICE_NAME }}
+          image: ${{ steps.build.outputs.image }}
+
+      - name: Deploy to ECS
+        uses: aws-actions/amazon-ecs-deploy-task-definition@v1
+        with:
+          task-definition: ${{ steps.task-def.outputs.task-definition }}
+          service: cdci-prd-${{ env.SERVICE_NAME }}-service
+          cluster: ${{ env.CLUSTER }}
+          wait-for-service-stability: true
