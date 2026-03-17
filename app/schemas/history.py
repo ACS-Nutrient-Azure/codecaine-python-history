@@ -19,8 +19,8 @@ class SupplementOut(BaseModel):
     is_active: bool | None = None
     itk_purchased_dt: date | None = None
     itk_estimated_end_dt: date | None = None
-    remaining_count: int | None = None   # itk_total_quantity - 전체 복용 횟수
-    low_stock: bool = False              # remaining_count <= LOW_STOCK_THRESHOLD
+    remaining_count: int | None = None
+    low_stock: bool = False
 
 
 class SupplementListResponse(BaseModel):
@@ -51,4 +51,4 @@ class RecordUpsertRequest(BaseModel):
     cognito_id: str
     current_id: int
     date: date
-    taken_count: int  # 0이면 해당 날짜 기록 전체 삭제
+    taken_count: int
