@@ -4,9 +4,26 @@ from pydantic_settings import BaseSettings
 class Settings(BaseSettings):
     app_name: str = "History Service"
     app_env: str = "development"
-    app_port: int = 8004
+    app_port: int = 8000
 
-    database_url: str
+    # DB 개별 변수 (ECS 환경변수로 주입)
+    db_user: str = ""
+    db_password: str = ""
+    db_host: str = ""
+    db_port: int = 5432
+    db_name: str = ""
+
+    # 로컬 개발용 직접 URL (설정 시 개별 변수보다 우선)
+    database_url: str = ""
+
+    @property
+    def db_url(self) -> str:
+        if self.database_url:
+            return self.database_url
+        return (
+            f"postgresql+asyncpg://{self.db_user}:{self.db_password}"
+            f"@{self.db_host}:{self.db_port}/{self.db_name}"
+        )
 
     # Cognito
     cognito_user_pool_id: str = ""
