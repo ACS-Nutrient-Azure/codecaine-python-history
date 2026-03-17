@@ -25,7 +25,8 @@ def _get_cognito_jwks() -> list:
         f"https://cognito-idp.{settings.aws_region}.amazonaws.com"
         f"/{settings.cognito_user_pool_id}/.well-known/jwks.json"
     )
-    resp = httpx.get(url, timeout=5)
+    with httpx.Client(timeout=5) as client:
+        resp = client.get(url)
     resp.raise_for_status()
     return resp.json()["keys"]
 
