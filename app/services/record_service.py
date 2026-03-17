@@ -43,11 +43,10 @@ def _put_low_stock_event(cognito_id: str, supplement_name: str, remaining: int) 
     logger.info(f"EventBridge 발행: {supplement_name} 잔여 {remaining}회분 (user={cognito_id})")
 
 
-async def _get_total_taken(db: AsyncSession, current_id: int, cognito_id: str) -> int:
+async def _get_total_taken(db: AsyncSession, current_id: int) -> int:
     result = await db.execute(
         select(func.count(IntakeItem.item_id)).where(
             IntakeItem.current_id == current_id,
-            IntakeItem.cognito_id == cognito_id,
         )
     )
     return result.scalar() or 0
@@ -64,13 +63,16 @@ class RecordService:
         result = await db.execute(q)
         supplements = result.scalars().all()
 
-        # 전체 복용 횟수 집계 (current_id별 COUNT)
-        count_result = await db.execute(
-            select(IntakeItem.current_id, func.count(IntakeItem.item_id).label("total"))
-            .where(IntakeItem.cognito_id == cognito_id)
-            .group_by(IntakeItem.current_id)
-        )
-        taken_map = {row.current_id: row.total for row in count_result.all()}
+        # current_id 목록으로 복용 횟수 집계
+        current_ids = [s.current_id for s in supplements]
+        taken_map: dict[int, int] = {}
+        if current_ids:
+            count_result = await db.execute(
+                select(IntakeItem.current_id, func.count(IntakeItem.item_id).label("total"))
+                .where(IntakeItem.current_id.in_(current_ids))
+                .group_by(IntakeItem.current_id)
+            )
+            taken_map = {row.current_id: row.total for row in count_result.all()}
 
         out = []
         for s in supplements:
@@ -106,7 +108,7 @@ class RecordService:
                 func.count(IntakeItem.item_id).label("taken_count"),
             )
             .where(
-                IntakeItem.cognito_id == cognito_id,
+                IntakeItem.current_id.in_(list(supplements.keys())),
                 func.extract("year", IntakeItem.intake_dt) == year,
                 func.extract("month", IntakeItem.intake_dt) == month,
             )
@@ -130,13 +132,9 @@ class RecordService:
         return RecordsResponse(year=year, month=month, records=records)
 
     async def upsert_record(self, db: AsyncSession, req: RecordUpsertRequest) -> None:
-        """taken_count에 맞게 intake_item row 수 동기화.
-        복용 기록이 늘어나는 경우(diff > 0)에만 재구매 알림 체크.
-        알림 기준: 버튼 클릭 직전 잔여 > 10 → 클릭 직후 잔여 ≤ 10 (임계점 통과 시 1회만 발행)
-        """
+        """taken_count에 맞게 intake_item row 수 동기화."""
         current_count_result = await db.execute(
             select(func.count(IntakeItem.item_id)).where(
-                IntakeItem.cognito_id == req.cognito_id,
                 IntakeItem.current_id == req.current_id,
                 IntakeItem.intake_dt == req.date,
             )
@@ -144,22 +142,19 @@ class RecordService:
         current_count = current_count_result.scalar() or 0
         diff = req.taken_count - current_count
 
-        # 잔여량 체크는 복용 기록 추가 직전에 수행 (before)
         before_total_taken = None
         if diff > 0:
-            before_total_taken = await _get_total_taken(db, req.current_id, req.cognito_id)
+            before_total_taken = await _get_total_taken(db, req.current_id)
 
         if diff > 0:
             for _ in range(diff):
                 db.add(IntakeItem(
                     current_id=req.current_id,
-                    cognito_id=req.cognito_id,
                     intake_dt=req.date,
                 ))
         elif diff < 0:
             rows_to_delete = await db.execute(
                 select(IntakeItem.item_id).where(
-                    IntakeItem.cognito_id == req.cognito_id,
                     IntakeItem.current_id == req.current_id,
                     IntakeItem.intake_dt == req.date,
                 ).order_by(IntakeItem.item_id.asc()).limit(-diff)
@@ -169,7 +164,6 @@ class RecordService:
 
         await db.flush()
 
-        # 복용 증가 시에만 임계점 통과 여부 확인
         if diff > 0 and before_total_taken is not None:
             await self._check_low_stock(db, req, before_total_taken, before_total_taken + diff)
 
@@ -180,12 +174,8 @@ class RecordService:
         before_taken: int,
         after_taken: int,
     ) -> None:
-        """클릭 전 잔여 > 10, 클릭 후 잔여 ≤ 10인 임계점 통과 시 EventBridge 발행"""
         supp_result = await db.execute(
-            select(IntakeSupplement).where(
-                IntakeSupplement.current_id == req.current_id,
-                IntakeSupplement.cognito_id == req.cognito_id,
-            )
+            select(IntakeSupplement).where(IntakeSupplement.current_id == req.current_id)
         )
         supp = supp_result.scalar_one_or_none()
         if not supp or supp.itk_total_quantity is None:
@@ -193,15 +183,14 @@ class RecordService:
 
         total_qty = supp.itk_total_quantity
         remaining_before = total_qty - before_taken
-        remaining_after  = total_qty - after_taken
+        remaining_after = total_qty - after_taken
 
-        # 임계점을 이번 클릭에서 처음 통과한 경우에만 발행
         if remaining_before > LOW_STOCK_THRESHOLD and remaining_after <= LOW_STOCK_THRESHOLD:
             try:
-                loop = asyncio.get_event_loop()
+                loop = asyncio.get_running_loop()
                 await loop.run_in_executor(
                     None,
-                    partial(_put_low_stock_event, req.cognito_id, supp.itk_product_name or "", remaining_after),
+                    partial(_put_low_stock_event, supp.cognito_id, supp.itk_product_name or "", remaining_after),
                 )
             except (BotoCoreError, ClientError) as e:
                 logger.warning(f"EventBridge 발행 실패 (무시됨): {e}")
