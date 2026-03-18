@@ -3,7 +3,7 @@ name: Deploy to ECS
 on:
   push:
     branches: [deploy]
-    paths: ['app/**', '.github/workflows/deploy.yml']
+    paths: ['app/**', '.github/workflows/deploy.yml', 'Dockerfile']
   workflow_dispatch:
 
 env:
