@@ -2,14 +2,10 @@ from fastapi import FastAPI, Request, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.exceptions import RequestValidationError
-from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
 
 from app.core.config import settings
 from app.core.security import create_test_token
-from app.core.telemetry import setup_telemetry
 from app.api.router import api_router
-
-setup_telemetry()
 
 app = FastAPI(
     title=settings.app_name,
@@ -28,7 +24,6 @@ app.add_middleware(
 )
 
 app.include_router(api_router)
-FastAPIInstrumentor.instrument_app(app)
 
 
 @app.exception_handler(HTTPException)
