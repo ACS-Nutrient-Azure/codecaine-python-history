@@ -6,7 +6,7 @@ from functools import partial
 
 import boto3
 from botocore.exceptions import BotoCoreError, ClientError
-from sqlalchemy import select, func, delete
+from sqlalchemy import select, func, delete, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.history import IntakeSupplement, IntakeItem
@@ -43,15 +43,6 @@ def _put_low_stock_event(cognito_id: str, supplement_name: str, remaining: int) 
     logger.info(f"EventBridge 발행: {supplement_name} 잔여 {remaining}회분 (user={cognito_id})")
 
 
-async def _get_total_taken(db: AsyncSession, current_id: int) -> int:
-    result = await db.execute(
-        select(func.count(IntakeItem.item_id)).where(
-            IntakeItem.current_id == current_id,
-        )
-    )
-    return result.scalar() or 0
-
-
 class RecordService:
 
     async def get_supplements(
@@ -63,21 +54,10 @@ class RecordService:
         result = await db.execute(q)
         supplements = result.scalars().all()
 
-        # current_id 목록으로 복용 횟수 집계
-        current_ids = [s.current_id for s in supplements]
-        taken_map: dict[int, int] = {}
-        if current_ids:
-            count_result = await db.execute(
-                select(IntakeItem.current_id, func.count(IntakeItem.item_id).label("total"))
-                .where(IntakeItem.current_id.in_(current_ids))
-                .group_by(IntakeItem.current_id)
-            )
-            taken_map = {row.current_id: row.total for row in count_result.all()}
-
         out = []
         for s in supplements:
-            total_taken = taken_map.get(s.current_id, 0)
-            remaining = (s.itk_total_quantity - total_taken) if s.itk_total_quantity is not None else None
+            # remaining_count는 DB에 직접 저장된 값 사용
+            remaining = s.remaining_count
             low_stock = remaining is not None and remaining <= LOW_STOCK_THRESHOLD
             out.append(SupplementOut(
                 **{c.key: getattr(s, c.key) for c in s.__table__.columns},
@@ -132,7 +112,9 @@ class RecordService:
         return RecordsResponse(year=year, month=month, records=records)
 
     async def upsert_record(self, db: AsyncSession, req: RecordUpsertRequest) -> None:
-        """taken_count에 맞게 intake_item row 수 동기화."""
+        """taken_count에 맞게 intake_item row 수 동기화 + remaining_count 직접 업데이트."""
+
+        # 오늘 날짜의 현재 intake_item 수
         current_count_result = await db.execute(
             select(func.count(IntakeItem.item_id)).where(
                 IntakeItem.current_id == req.current_id,
@@ -142,17 +124,24 @@ class RecordService:
         current_count = current_count_result.scalar() or 0
         diff = req.taken_count - current_count
 
-        before_total_taken = None
-        if diff > 0:
-            before_total_taken = await _get_total_taken(db, req.current_id)
+        if diff == 0:
+            return
 
+        # 업데이트 전 remaining_count 캡처 (임계값 크로싱 체크용)
+        supp_result = await db.execute(
+            select(IntakeSupplement).where(IntakeSupplement.current_id == req.current_id)
+        )
+        supp = supp_result.scalar_one_or_none()
+        remaining_before = supp.remaining_count if supp else None
+
+        # intake_item 행 추가/삭제
         if diff > 0:
             for _ in range(diff):
                 db.add(IntakeItem(
                     current_id=req.current_id,
                     intake_dt=req.date,
                 ))
-        elif diff < 0:
+        else:
             rows_to_delete = await db.execute(
                 select(IntakeItem.item_id).where(
                     IntakeItem.current_id == req.current_id,
@@ -162,38 +151,29 @@ class RecordService:
             ids = [r[0] for r in rows_to_delete.all()]
             await db.execute(delete(IntakeItem).where(IntakeItem.item_id.in_(ids)))
 
+        # remaining_count 직접 UPDATE (remaining_count가 NULL이 아닌 경우만)
+        if remaining_before is not None:
+            new_remaining = max(0, remaining_before - diff)
+            await db.execute(
+                update(IntakeSupplement)
+                .where(IntakeSupplement.current_id == req.current_id)
+                .values(remaining_count=new_remaining)
+            )
+
         await db.commit()
 
-        if diff > 0 and before_total_taken is not None:
-            await self._check_low_stock(db, req, before_total_taken, before_total_taken + diff)
-
-    async def _check_low_stock(
-        self,
-        db: AsyncSession,
-        req: RecordUpsertRequest,
-        before_taken: int,
-        after_taken: int,
-    ) -> None:
-        supp_result = await db.execute(
-            select(IntakeSupplement).where(IntakeSupplement.current_id == req.current_id)
-        )
-        supp = supp_result.scalar_one_or_none()
-        if not supp or supp.itk_total_quantity is None:
-            return
-
-        total_qty = supp.itk_total_quantity
-        remaining_before = total_qty - before_taken
-        remaining_after = total_qty - after_taken
-
-        if remaining_before > LOW_STOCK_THRESHOLD and remaining_after <= LOW_STOCK_THRESHOLD:
-            try:
-                loop = asyncio.get_running_loop()
-                await loop.run_in_executor(
-                    None,
-                    partial(_put_low_stock_event, supp.cognito_id, supp.itk_product_name or "", remaining_after),
-                )
-            except (BotoCoreError, ClientError) as e:
-                logger.warning(f"EventBridge 발행 실패 (무시됨): {e}")
+        # Low stock 임계값 크로싱 시 EventBridge 발행
+        if diff > 0 and remaining_before is not None and supp is not None:
+            new_remaining = max(0, remaining_before - diff)
+            if remaining_before > LOW_STOCK_THRESHOLD >= new_remaining:
+                try:
+                    loop = asyncio.get_running_loop()
+                    await loop.run_in_executor(
+                        None,
+                        partial(_put_low_stock_event, supp.cognito_id, supp.itk_product_name or "", new_remaining),
+                    )
+                except (BotoCoreError, ClientError) as e:
+                    logger.warning(f"EventBridge 발행 실패 (무시됨): {e}")
 
 
 record_service = RecordService()
