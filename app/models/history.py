@@ -30,7 +30,6 @@ class IntakeItem(Base):
 
     item_id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     current_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("intake_supplements.current_id"), nullable=False)
-    cognito_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
     intake_dt: Mapped[date | None] = mapped_column(Date, nullable=True)
     created_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
