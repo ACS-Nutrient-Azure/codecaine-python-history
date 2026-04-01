@@ -29,11 +29,9 @@ class RecordService:
 
         out = []
         for s in supplements:
-            remaining = s.remaining_count
-            low_stock = remaining is not None and remaining <= LOW_STOCK_THRESHOLD
+            low_stock = s.remaining_count is not None and s.remaining_count <= LOW_STOCK_THRESHOLD
             out.append(SupplementOut(
                 **{c.key: getattr(s, c.key) for c in s.__table__.columns},
-                remaining_count=remaining,
                 low_stock=low_stock,
             ))
 
