@@ -162,7 +162,7 @@ class RecordService:
             ids = [r[0] for r in rows_to_delete.all()]
             await db.execute(delete(IntakeItem).where(IntakeItem.item_id.in_(ids)))
 
-        await db.flush()
+        await db.commit()
 
         if diff > 0 and before_total_taken is not None:
             await self._check_low_stock(db, req, before_total_taken, before_total_taken + diff)
