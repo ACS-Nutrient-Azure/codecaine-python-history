@@ -19,7 +19,6 @@ class SupplementOut(BaseModel):
     is_active: bool | None = None
     itk_purchased_dt: date | None = None
     itk_estimated_end_dt: date | None = None
-    remaining_count: int | None = None  # DB 저장값 (복용 시 직접 차감)
     low_stock: bool = False
 
 

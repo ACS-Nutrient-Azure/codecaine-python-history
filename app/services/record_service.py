@@ -29,12 +29,9 @@ class RecordService:
 
         out = []
         for s in supplements:
-            # itk_total_quantity가 잔여 복용량 (복용 시마다 차감됨)
-            remaining = s.itk_total_quantity
-            low_stock = remaining is not None and remaining <= LOW_STOCK_THRESHOLD
+            low_stock = s.itk_total_quantity is not None and s.itk_total_quantity <= LOW_STOCK_THRESHOLD
             out.append(SupplementOut(
                 **{c.key: getattr(s, c.key) for c in s.__table__.columns},
-                remaining_count=remaining,
                 low_stock=low_stock,
             ))
 
@@ -99,7 +96,6 @@ class RecordService:
         if diff == 0:
             return
 
-        # intake_item 행 추가/삭제
         if diff > 0:
             for _ in range(diff):
                 db.add(IntakeItem(
