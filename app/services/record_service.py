@@ -29,9 +29,12 @@ class RecordService:
 
         out = []
         for s in supplements:
-            low_stock = s.remaining_count is not None and s.remaining_count <= LOW_STOCK_THRESHOLD
+            # itk_total_quantity가 잔여 복용량 (복용 시마다 차감됨)
+            remaining = s.itk_total_quantity
+            low_stock = remaining is not None and remaining <= LOW_STOCK_THRESHOLD
             out.append(SupplementOut(
                 **{c.key: getattr(s, c.key) for c in s.__table__.columns},
+                remaining_count=remaining,
                 low_stock=low_stock,
             ))
 
@@ -82,7 +85,7 @@ class RecordService:
         return RecordsResponse(year=year, month=month, records=records)
 
     async def upsert_record(self, db: AsyncSession, req: RecordUpsertRequest) -> None:
-        """taken_count에 맞게 intake_item row 수 동기화 + remaining_count 직접 차감."""
+        """taken_count에 맞게 intake_item row 수 동기화 + itk_total_quantity 직접 차감."""
 
         current_count_result = await db.execute(
             select(func.count(IntakeItem.item_id)).where(
@@ -113,14 +116,14 @@ class RecordService:
             ids = [r[0] for r in rows_to_delete.all()]
             await db.execute(delete(IntakeItem).where(IntakeItem.item_id.in_(ids)))
 
-        # remaining_count 직접 UPDATE (NULL이 아닌 경우만, 0 이하로 내려가지 않도록)
+        # itk_total_quantity 직접 차감 (NULL이 아닌 경우만, 0 이하로 내려가지 않도록)
         await db.execute(
             update(IntakeSupplement)
             .where(
                 IntakeSupplement.current_id == req.current_id,
-                IntakeSupplement.remaining_count.isnot(None),
+                IntakeSupplement.itk_total_quantity.isnot(None),
             )
-            .values(remaining_count=func.greatest(0, IntakeSupplement.remaining_count - diff))
+            .values(itk_total_quantity=func.greatest(0, IntakeSupplement.itk_total_quantity - diff))
         )
 
         await db.commit()
