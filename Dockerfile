@@ -7,12 +7,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends curl && rm -rf 
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# OTel 추가
-RUN pip install --no-cache-dir opentelemetry-distro opentelemetry-exporter-otlp
-RUN opentelemetry-bootstrap -a install
-
 COPY . .
 
 EXPOSE 8000
 
-CMD ["opentelemetry-instrument", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
