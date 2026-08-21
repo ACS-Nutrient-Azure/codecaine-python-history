@@ -1,0 +1,50 @@
+name: Deploy to Azure Container Apps
+
+on:
+  push:
+    branches: [deploy]
+    paths: ['app/**', '.github/workflows/azure-deploy.yml']
+  workflow_dispatch:
+
+permissions:
+  id-token: write   # OIDC 토큰 발급에 필수 - 이거 없으면 azure/login이 실패함
+  contents: read
+
+env:
+  ACR_NAME: cdciprdacr
+  ACR_LOGIN_SERVER: cdciprdacr.azurecr.io
+  IMAGE_NAME: history
+  RESOURCE_GROUP: cdci-prd-rg
+  CONTAINER_APP_NAME: cdci-prd-history
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Azure Login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: ACR login
+        run: az acr login --name ${{ env.ACR_NAME }}
+
+      - name: Build and push image
+        id: build
+        run: |
+          TAG=${GITHUB_SHA::7}
+          IMAGE=${{ env.ACR_LOGIN_SERVER }}/${{ env.IMAGE_NAME }}:$TAG
+          docker build -t $IMAGE .
+          docker push $IMAGE
+          echo "image=$IMAGE" >> $GITHUB_OUTPUT
+
+      - name: Deploy to Container Apps
+        run: |
+          az containerapp update \
+            --name ${{ env.CONTAINER_APP_NAME }} \
+            --resource-group ${{ env.RESOURCE_GROUP }} \
+            --image ${{ steps.build.outputs.image }}
